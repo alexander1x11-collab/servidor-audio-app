@@ -1,10 +1,10 @@
 import os
+import tempfile
 import replicate
-import yt_dlp
 from fastapi import FastAPI, HTTPException, UploadFile, File, Header
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="Servidor de Audio")
+app = FastAPI(title="Servidor de Audio con Replicate")
 
 app.add_middleware(
     CORSMiddleware,
@@ -28,16 +28,32 @@ async def separar_audio(
 ):
     try:
         if not REPLICATE_API_TOKEN:
-            raise HTTPException(status_code=500, detail="Falta REPLICATE_API_TOKEN")
+            raise HTTPException(status_code=500, detail="Falta REPLICATE_API_TOKEN en Railway")
 
-        output = replicate.run(
-            "cjwbw/htdemucs:f52950c0857e040f2824be4c1e48e028b80b0f90e5f2e604fefd267868350d32",
-            input={"audio": file.file}
-        )
+        # Guardar archivo localmente de forma temporal antes de enviarlo a Replicate
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_file:
+            content = await file.read()
+            temp_file.write(content)
+            temp_path = temp_file.name
+
+        print(f"--> Procesando archivo local guardado en: {temp_path}")
+
+        # Enviar archivo local a Replicate
+        with open(temp_path, "rb") as audio_file:
+            output = replicate.run(
+                "cjwbw/htdemucs:f52950c0857e040f2824be4c1e48e028b80b0f90e5f2e604fefd267868350d32",
+                input={"audio": audio_file}
+            )
+
+        # Eliminar archivo temporal
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
         return {"status": "exito", "urls": output}
+
     except Exception as e:
         print(f"--> Error en separar-audio: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error al procesar audio: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al procesar archivo de audio: {str(e)}")
 
 @app.post("/api/separar-url/")
 async def separar_url(
@@ -51,26 +67,13 @@ async def separar_url(
         
     try:
         if not REPLICATE_API_TOKEN:
-            raise HTTPException(status_code=500, detail="Falta REPLICATE_API_TOKEN")
+            raise HTTPException(status_code=500, detail="Falta REPLICATE_API_TOKEN en Railway")
 
-        # Extraer el enlace directo de audio para evitar el bloqueo de enlace web de YouTube
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'quiet': True,
-            'no_warnings': True,
-        }
-        
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            audio_url = info.get('url')
-
-        # Enviar el stream directo de audio a Replicate
         output = replicate.run(
             "cjwbw/htdemucs:f52950c0857e040f2824be4c1e48e028b80b0f90e5f2e604fefd267868350d32",
-            input={"audio": audio_url}
+            input={"audio": url}
         )
-        
         return {"status": "exito", "urls": output}
     except Exception as e:
         print(f"--> Error en separar-url: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error al procesar URL de YouTube: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al procesar URL: {str(e)}")
