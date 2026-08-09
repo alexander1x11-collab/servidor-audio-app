@@ -4,7 +4,7 @@ import replicate
 from fastapi import FastAPI, HTTPException, UploadFile, File, Header
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="Servidor de Audio con Replicate")
+app = FastAPI(title="Servidor de Audio Rápido")
 
 app.add_middleware(
     CORSMiddleware,
@@ -30,22 +30,21 @@ async def separar_audio(
         if not REPLICATE_API_TOKEN:
             raise HTTPException(status_code=500, detail="Falta REPLICATE_API_TOKEN en Railway")
 
-        # Guardar archivo localmente de forma temporal antes de enviarlo a Replicate
+        # Guardar archivo local temporalmente
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_file:
             content = await file.read()
             temp_file.write(content)
             temp_path = temp_file.name
 
-        print(f"--> Procesando archivo local guardado en: {temp_path}")
+        print(f"--> Enviando a Replicate: {temp_path}")
 
-        # Enviar archivo local a Replicate
+        # Ejecución del modelo rápido de separación
         with open(temp_path, "rb") as audio_file:
             output = replicate.run(
                 "cjwbw/htdemucs:f52950c0857e040f2824be4c1e48e028b80b0f90e5f2e604fefd267868350d32",
                 input={"audio": audio_file}
             )
 
-        # Eliminar archivo temporal
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
@@ -53,7 +52,7 @@ async def separar_audio(
 
     except Exception as e:
         print(f"--> Error en separar-audio: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error al procesar archivo de audio: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error en servidor: {str(e)}")
 
 @app.post("/api/separar-url/")
 async def separar_url(
@@ -76,4 +75,4 @@ async def separar_url(
         return {"status": "exito", "urls": output}
     except Exception as e:
         print(f"--> Error en separar-url: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error al procesar URL: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error en servidor: {str(e)}")
