@@ -23,15 +23,15 @@ def get_today_string():
     return time.strftime("%Y-%m-%d")
 
 def comprobar_limite(user_id: str, is_premium: str):
-    es_premium_bool = is_premium.lower() == "true"
+    es_premium_bool = str(is_premium).lower() == "true"
     today = get_today_string()
     
     if not es_premium_bool:
         user_data = user_credits.get(user_id, {"date": today, "count": 0})
-        if user_data["date"] != today:
+        if user_data.get("date") != today:
             user_data = {"date": today, "count": 0}
             
-        if user_data["count"] >= 2:
+        if user_data.get("count", 0) >= 2:
             raise HTTPException(
                 status_code=429, 
                 detail="Has alcanzado tu límite de 2 canciones gratis hoy. Vuelve mañana o adquiere la suscripción Premium."
@@ -49,10 +49,13 @@ def procesar_con_replicate(file_path: str, token: str):
                 "two_stems": "vocals"
             }
         )
-    return {
-        "voz": output if isinstance(output, str) else output.get("vocals"),
-        "pista": output.get("no_vocals") if isinstance(output, dict) else None
-    }
+    
+    if isinstance(output, dict):
+        return {"voz": output.get("vocals"), "pista": output.get("no_vocals")}
+    elif hasattr(output, "vocals"):
+        return {"voz": getattr(output, "vocals", None), "pista": getattr(output, "no_vocals", None)}
+    else:
+        return {"voz": str(output), "pista": None}
 
 @app.get("/")
 def home():
@@ -64,7 +67,7 @@ def home():
 @app.post("/api/separar-audio/")
 async def separar_audio(
     file: UploadFile = File(...), 
-    user_id: str = Header(...), 
+    user_id: str = Header("usuario_anonimo"), 
     is_premium: str = Header("false")
 ):
     token = os.environ.get("REPLICATE_API_TOKEN")
@@ -86,7 +89,7 @@ async def separar_audio(
         urls_resultado = procesar_con_replicate(temp_path, token)
         audio_cache[audio_hash] = urls_resultado
         
-        if not es_premium_bool:
+        if not es_premium_bool and user_data:
             user_data["count"] += 1
             user_credits[user_id] = user_data
 
@@ -101,12 +104,12 @@ async def separar_audio(
         raise HTTPException(status_code=500, detail=f"Error en Replicate: {str(e)}")
 
 # -------------------------------------------------------------
-# 2. NUEVA RUTA PARA ENLACES DE YOUTUBE U OTRAS URLS
+# 2. RUTA PARA ENLACES DE YOUTUBE / URLS
 # -------------------------------------------------------------
 @app.post("/api/separar-url/")
 async def separar_url(
     data: dict = Body(...),
-    user_id: str = Header(...), 
+    user_id: str = Header("usuario_anonimo"), 
     is_premium: str = Header("false")
 ):
     token = os.environ.get("REPLICATE_API_TOKEN")
@@ -119,53 +122,44 @@ async def separar_url(
 
     user_data, es_premium_bool = comprobar_limite(user_id, is_premium)
     
-    # Caché basada en la URL del video
     url_hash = hashlib.md5(url.encode()).hexdigest()
     if url_hash in audio_cache:
         return {"status": "exito_cache", "urls": audio_cache[url_hash]}
 
     output_filename = f"temp_yt_{int(time.time())}"
     
-    # Opciones de extracción con yt-dlp
     ydl_opts = {
         'format': 'bestaudio/best',
         'outtmpl': f'{output_filename}.%(ext)s',
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '192',
-        }],
         'quiet': True,
         'no_warnings': True,
+        'nocheckcertificate': True,
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
 
-    temp_file_mp3 = f"{output_filename}.mp3"
+    temp_downloaded_file = None
 
     try:
-        # Descargar el audio desde la URL de YouTube o web
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
+            info = ydl.extract_info(url, download=True)
+            temp_downloaded_file = ydl.prepare_filename(info)
 
-        if not os.path.exists(temp_file_mp3):
-            # Si el postprocesador no cambió la extensión
-            for file in os.listdir("."):
-                if file.startswith(output_filename):
-                    temp_file_mp3 = file
-                    break
+        if not os.path.exists(temp_downloaded_file):
+            raise Exception("No se pudo descargar el archivo de audio desde la URL dada.")
 
-        urls_resultado = procesar_con_replicate(temp_file_mp3, token)
+        urls_resultado = procesar_con_replicate(temp_downloaded_file, token)
         audio_cache[url_hash] = urls_resultado
         
-        if not es_premium_bool:
+        if not es_premium_bool and user_data:
             user_data["count"] += 1
             user_credits[user_id] = user_data
 
-        if os.path.exists(temp_file_mp3):
-            os.remove(temp_file_mp3)
+        if temp_downloaded_file and os.path.exists(temp_downloaded_file):
+            os.remove(temp_downloaded_file)
 
         return {"status": "exito", "urls": urls_resultado}
 
     except Exception as e:
-        if os.path.exists(temp_file_mp3):
-            os.remove(temp_file_mp3)
+        if temp_downloaded_file and os.path.exists(temp_downloaded_file):
+            os.remove(temp_downloaded_file)
         raise HTTPException(status_code=500, detail=f"Error procesando la URL: {str(e)}")
