@@ -1,9 +1,9 @@
 import os
-import shutil
+import replicate
 from fastapi import FastAPI, HTTPException, UploadFile, File, Header
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="Servidor de Audio Real")
+app = FastAPI(title="Servidor de Audio con Replicate")
 
 app.add_middleware(
     CORSMiddleware,
@@ -13,9 +13,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Configura tu token de Replicate en las Variables de Entorno de Railway (REPLICATE_API_TOKEN)
+REPLICATE_API_TOKEN = os.environ.get("REPLICATE_API_TOKEN")
+
 @app.get("/")
 def home():
-    return {"status": "online", "mensaje": "Servidor de audio funcionando correctamente"}
+    return {"status": "online", "mensaje": "Servidor activo"}
 
 @app.post("/api/separar-audio/")
 async def separar_audio(
@@ -24,32 +27,24 @@ async def separar_audio(
     is_premium: str = Header(default="false")
 ):
     try:
-        temp_dir = "temp"
-        os.makedirs(temp_dir, exist_ok=True)
-        file_path = os.path.join(temp_dir, file.filename)
-        
-        # Guarda la canción subida por el usuario
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-            
-        print(f"--> Procesando audio recibido: {file_path}")
+        if not REPLICATE_API_TOKEN:
+            raise HTTPException(status_code=500, detail="Falta la variable REPLICATE_API_TOKEN en Railway")
 
-        # AQUÍ VA TU PROCESAMIENTO REAL DE IA (Replicate / Demucs)
-        # Asegúrate de enviar file_path al modelo de separación de pistas
-        # Y obtener los enlaces o archivos resultantes de ESTA canción específica.
-
-        # Ejemplo de retorno con las pistas procesadas reales:
-        # return {
-        #     "status": "exito",
-        #     "urls": {
-        #         "voz": url_voz_procesada_real,
-        #         "pista": url_pista_procesada_real
-        #     }
-        # }
+        # Subir temporalmente o enviar directamente a Replicate (Modelo HTDemucs / Demucs)
+        output = replicate.run(
+            "cjwbw/htdemucs:f52950c0857e040f2824be4c1e48e028b80b0f90e5f2e604fefd267868350d32",
+            input={"audio": file.file}
+        )
         
+        # Replicate devuelve un diccionario/objeto con las URLs de los audios procesados
+        return {
+            "status": "exito",
+            "mensaje": "Audio procesado con éxito",
+            "urls": output
+        }
     except Exception as e:
-        print(f"--> Error al procesar audio: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error en servidor: {str(e)}")
+        print(f"--> Error en separar-audio: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al procesar audio con IA: {str(e)}")
 
 @app.post("/api/separar-url/")
 async def separar_url(
@@ -62,11 +57,19 @@ async def separar_url(
         raise HTTPException(status_code=400, detail="URL no proporcionada")
         
     try:
-        print(f"--> Descargando y procesando URL de YouTube: {url}")
+        if not REPLICATE_API_TOKEN:
+            raise HTTPException(status_code=500, detail="Falta la variable REPLICATE_API_TOKEN en Railway")
+
+        output = replicate.run(
+            "cjwbw/htdemucs:f52950c0857e040f2824be4c1e48e028b80b0f90e5f2e604fefd267868350d32",
+            input={"audio": url}
+        )
         
-        # AQUÍ VA LA DESCARGA Y PROCESAMIENTO REAL DE LA URL DE YOUTUBE
-        # Descarga el audio de 'url' y procesa con el modelo de IA
-        
+        return {
+            "status": "exito",
+            "mensaje": "URL procesada con éxito",
+            "urls": output
+        }
     except Exception as e:
-        print(f"--> Error al procesar URL: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error al procesar URL: {str(e)}")
+        print(f"--> Error en separar-url: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al procesar URL con IA: {str(e)}")
