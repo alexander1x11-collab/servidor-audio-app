@@ -1,9 +1,10 @@
 import os
 import replicate
+import yt_dlp
 from fastapi import FastAPI, HTTPException, UploadFile, File, Header
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="Servidor de Audio con Replicate")
+app = FastAPI(title="Servidor de Audio")
 
 app.add_middleware(
     CORSMiddleware,
@@ -13,7 +14,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Configura tu token de Replicate en las Variables de Entorno de Railway (REPLICATE_API_TOKEN)
 REPLICATE_API_TOKEN = os.environ.get("REPLICATE_API_TOKEN")
 
 @app.get("/")
@@ -28,23 +28,16 @@ async def separar_audio(
 ):
     try:
         if not REPLICATE_API_TOKEN:
-            raise HTTPException(status_code=500, detail="Falta la variable REPLICATE_API_TOKEN en Railway")
+            raise HTTPException(status_code=500, detail="Falta REPLICATE_API_TOKEN")
 
-        # Subir temporalmente o enviar directamente a Replicate (Modelo HTDemucs / Demucs)
         output = replicate.run(
             "cjwbw/htdemucs:f52950c0857e040f2824be4c1e48e028b80b0f90e5f2e604fefd267868350d32",
             input={"audio": file.file}
         )
-        
-        # Replicate devuelve un diccionario/objeto con las URLs de los audios procesados
-        return {
-            "status": "exito",
-            "mensaje": "Audio procesado con éxito",
-            "urls": output
-        }
+        return {"status": "exito", "urls": output}
     except Exception as e:
         print(f"--> Error en separar-audio: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error al procesar audio con IA: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al procesar audio: {str(e)}")
 
 @app.post("/api/separar-url/")
 async def separar_url(
@@ -58,18 +51,26 @@ async def separar_url(
         
     try:
         if not REPLICATE_API_TOKEN:
-            raise HTTPException(status_code=500, detail="Falta la variable REPLICATE_API_TOKEN en Railway")
+            raise HTTPException(status_code=500, detail="Falta REPLICATE_API_TOKEN")
 
+        # Extraer el enlace directo de audio para evitar el bloqueo de enlace web de YouTube
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'quiet': True,
+            'no_warnings': True,
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            audio_url = info.get('url')
+
+        # Enviar el stream directo de audio a Replicate
         output = replicate.run(
             "cjwbw/htdemucs:f52950c0857e040f2824be4c1e48e028b80b0f90e5f2e604fefd267868350d32",
-            input={"audio": url}
+            input={"audio": audio_url}
         )
         
-        return {
-            "status": "exito",
-            "mensaje": "URL procesada con éxito",
-            "urls": output
-        }
+        return {"status": "exito", "urls": output}
     except Exception as e:
         print(f"--> Error en separar-url: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error al procesar URL con IA: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al procesar URL de YouTube: {str(e)}")
