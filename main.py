@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="Servidor Backend para Separación de Audio")
 
-# Permitir conexiones desde la aplicación móvil / web (CORS)
+# Configurar CORS para permitir peticiones desde cualquier origen (App móvil / Web)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -16,120 +16,94 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# -------------------------------------------------------------
-# CONFIGURACIÓN Y VARIABLES
-# -------------------------------------------------------------
-# Se obtiene el token de Replicate guardado en las Variables de Entorno de Railway
-REPLICATE_API_TOKEN = os.environ.get("REPLICATE_API_TOKEN")
-
-# Base de datos en memoria para el control de créditos diarios (Reset diario)
-# Estructura: { "user_id": {"date": "YYYY-MM-DD", "count": 1} }
+# Control de límites en memoria
 user_credits = {}
-
-# Memoria Caché para evitar volver a procesar y pagar por audios repetidos
-# Estructura: { "md5_hash_audio": {"voz": "url_voz", "pista": "url_pista"} }
 audio_cache = {}
 
-
 def get_today_string():
-    """Retorna la fecha actual en formato YYYY-MM-DD para calcular el límite diario."""
     return time.strftime("%Y-%m-%d")
-
 
 @app.get("/")
 def home():
-    """Ruta de prueba para verificar que el servidor en Railway está activo."""
     return {"status": "online", "mensaje": "Servidor de audio funcionando correctamente"}
-
 
 @app.post("/api/separar-audio/")
 async def separar_audio(
     file: UploadFile = File(...), 
     user_id: str = Header(...), 
-    is_premium: bool = Header(False)
+    is_premium: str = Header("false")
 ):
-    """
-    Ruta principal para procesar el audio subido por el usuario desde la app.
-    """
-    if not REPLICATE_API_TOKEN:
+    token = os.environ.get("REPLICATE_API_TOKEN")
+    if not token:
         raise HTTPException(
             status_code=500, 
             detail="Falta configurar la variable REPLICATE_API_TOKEN en Railway."
         )
 
+    # Convertir header is_premium a booleano
+    es_premium_bool = is_premium.lower() == "true"
     today = get_today_string()
     
-    # -------------------------------------------------------------
-    # 1. CONTROL DE CRÉDITOS Y LÍMITES DIARIOS (2 CANCIONES / DÍA)
-    # -------------------------------------------------------------
-    if not is_premium:
+    # 1. Control de límites diarios
+    if not es_premium_bool:
         user_data = user_credits.get(user_id, {"date": today, "count": 0})
-        
-        # Si cambió el día, reiniciamos el contador del usuario a 0
         if user_data["date"] != today:
             user_data = {"date": today, "count": 0}
             
-        # Verificar si el usuario superó el límite de 2 canciones
         if user_data["count"] >= 2:
             raise HTTPException(
                 status_code=429, 
                 detail="Has alcanzado tu límite de 2 canciones gratis hoy. Vuelve mañana o adquiere la suscripción Premium."
             )
 
-    # Leer el archivo de audio enviado desde la aplicación
     contents = await file.read()
     
-    # -------------------------------------------------------------
-    # 2. SISTEMA DE CACHÉ (Ahorro de costes en la API)
-    # -------------------------------------------------------------
+    # 2. Control de Caché por MD5
     audio_hash = hashlib.md5(contents).hexdigest()
-    
     if audio_hash in audio_cache:
-        # Si la canción ya fue procesada anteriormente, se devuelve sin llamar a Replicate ($0 costo)
         return {
             "status": "exito_cache",
-            "mensaje": "Canción recuperada instantáneamente de la caché.",
+            "mensaje": "Canción recuperada de la caché.",
             "urls": audio_cache[audio_hash]
         }
 
-    # Guardar temporalmente el archivo recibido en el disco del servidor
-    temp_path = f"temp_{file.filename}"
+    # Guardar archivo localmente en el contenedor
+    temp_path = f"temp_{int(time.time())}_{file.filename}"
     with open(temp_path, "wb") as f:
         f.write(contents)
 
-    # -------------------------------------------------------------
-    # 3. LLAMADA A LA API DE REPLICATE (Modelo HTDemucs)
-    # -------------------------------------------------------------
+    # 3. Procesamiento en Replicate con cliente autenticado
     try:
-        # Ejecución del modelo de IA de Meta en la nube
-        output = replicate.run(
-            "facebookresearch/demucs:b55aed039233f2081d113f02a63200a00465c010c2262d4993d05267a6e133c0",
-            input={
-                "audio": open(temp_path, "rb"),
-                "two_stems": "vocals"  # Separa únicamente Voz y Pista
-            }
-        )
+        client = replicate.Client(api_token=token)
         
+        with open(temp_path, "rb") as audio_file:
+            output = client.run(
+                "facebookresearch/demucs:b55aed039233f2081d113f02a63200a00465c010c2262d4993d05267a6e133c0",
+                input={
+                    "audio": audio_file,
+                    "two_stems": "vocals"
+                }
+            )
+        
+        # Estructurar resultado de salida
         urls_resultado = {
-            "voz": output.get("vocals"),
-            "pista": output.get("no_vocals")
+            "voz": output if isinstance(output, str) else output.get("vocals"),
+            "pista": output.get("no_vocals") if isinstance(output, dict) else None
         }
         
-        # Guardar en memoria Caché para futuros usuarios
+        # Guardar en Caché
         audio_cache[audio_hash] = urls_resultado
         
-        # Descontar 1 crédito al usuario gratuito
-        if not is_premium:
+        # Actualizar contador de créditos del usuario
+        if not es_premium_bool:
             user_data["count"] += 1
             user_credits[user_id] = user_data
 
-        # Eliminar archivo temporal local
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
         return {
             "status": "exito",
-            "creditos_usados_hoy": user_credits.get(user_id, {}).get("count", 0) if not is_premium else "Ilimitado",
             "urls": urls_resultado
         }
 
@@ -138,5 +112,5 @@ async def separar_audio(
             os.remove(temp_path)
         raise HTTPException(
             status_code=500, 
-            detail=f"Error al procesar el audio en la API: {str(e)}"
+            detail=f"Error en el procesamiento de Replicate: {str(e)}"
         )
