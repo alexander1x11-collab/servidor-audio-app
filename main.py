@@ -43,11 +43,10 @@ def Tarea_Separar_Audio(job_id: str, temp_path: str):
 
         print(f"--> Procesando URL en Replicate: {audio_url}")
 
-        # Ejecución utilizando la referencia oficial directa de Replicate
-        model = replicate.models.get("cjwbw/htdemucs")
-        version = model.versions.get("f52950c0857e040f2824be4c1e48e028b80b0f90e5f2e604fefd267868350d32")
-        
-        output = version.predict(audio=audio_url)
+        output = replicate.run(
+            "facebookresearch/demucs:e077d4f5a8251a16210db280249281a7b483161099f36f0412b1c73a114f6d4d",
+            input={"audio": audio_url}
+        )
 
         print(f"--> [ÉXITO]: {output}")
 
@@ -62,46 +61,36 @@ def Tarea_Separar_Audio(job_id: str, temp_path: str):
         }
     except Exception as e:
         print(f"--> Error en Replicate: {str(e)}")
-        # Si falla el primer modelo, intentar respaldo directo
-        try:
-            output = replicate.run("facebookresearch/demucs", input={"audio": audio_url})
-            TRABAJOS[job_id] = {
-                "status": "completado",
-                "urls": {
-                    "voz": output.get("vocals"),
-                    "pista": output.get("no_vocals") or output.get("other"),
-                    "bajo": output.get("bass"),
-                    "bateria": output.get("drums")
-                }
-            }
-        except Exception as err_fallback:
-            TRABAJOS[job_id] = {"status": "error", "mensaje": str(err_fallback)}
+        TRABAJOS[job_id] = {"status": "error", "mensaje": str(e)}
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
+# Rutas dobles (con y sin barra final) para evitar el Error 404
+@app.post("/api/separar-audio")
 @app.post("/api/separar-audio/")
 async def separar_audio(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...)
 ):
     if not REPLICATE_API_TOKEN:
-        raise HTTPException(status_code=500, detail="Falta la variable REPLICATE_API_TOKEN en Railway")
+        raise HTTPException(status_code=500, detail="Falta REPLICATE_API_TOKEN en Railway")
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_file:
         content = await file.read()
         temp_file.write(content)
         temp_path = temp_file.name
 
-    job_id = str(hash(temp_path + str(os.urandom(8))))
+    job_id = str(abs(hash(temp_path + str(os.urandom(8)))))
     TRABAJOS[job_id] = {"status": "pendiente"}
 
     background_tasks.add_task(Tarea_Separar_Audio, job_id, temp_path)
     return {"status": "exito", "job_id": job_id}
 
 @app.get("/api/estado-trabajo/{job_id}")
+@app.get("/api/estado-trabajo/{job_id}/")
 def obtener_estado(job_id: str):
     trabajo = TRABAJOS.get(job_id)
     if not trabajo:
-        raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+        raise HTTPException(status_code=404, detail=f"Trabajo {job_id} no encontrado")
     return trabajo
