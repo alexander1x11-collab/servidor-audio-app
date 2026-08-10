@@ -1,10 +1,12 @@
 import os
 import tempfile
+import asyncio
+import requests
 import replicate
 from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks, Header
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="Servidor de Audio Asíncrono")
+app = FastAPI(title="Servidor de Audio Definitivo")
 
 app.add_middleware(
     CORSMiddleware,
@@ -15,24 +17,48 @@ app.add_middleware(
 )
 
 REPLICATE_API_TOKEN = os.environ.get("REPLICATE_API_TOKEN")
-
-# Almacenamiento temporal de trabajos en memoria
 TRABAJOS = {}
 
 @app.get("/")
 def home():
-    return {"status": "online", "mensaje": "Servidor listo"}
+    return {"status": "online", "mensaje": "Servidor activo y listo"}
 
-def Tarea_Separar_Audio(job_id: str, file_path: str):
+def subir_a_host_temporal(file_path):
+    """Suba el archivo temporalmente a tmpfiles.org para darle una URL pública HTTPS a Replicate"""
+    try:
+        with open(file_path, "rb") as f:
+            response = requests.post("https://tmpfiles.org/api/v1/upload", files={"file": f})
+            data = response.json()
+            if response.status_code == 200 and "data" in data:
+                url_original = data["data"]["url"]
+                # Convertir a URL de descarga directa
+                url_directa = url_original.replace("tmpfiles.org/", "tmpfiles.org/dl/")
+                return url_directa
+    except Exception as e:
+        print(f"--> Error subiendo a host temporal: {e}")
+    return None
+
+def Tarea_Separar_Audio(job_id: str, temp_path: str):
     try:
         TRABAJOS[job_id] = {"status": "procesando"}
+
+        # 1. Obtener URL pública directa para el archivo
+        audio_url = subir_a_host_temporal(temp_path)
         
-        # Ejecución en Replicate (Demucs)
-        with open(file_path, "rb") as audio_file:
-            output = replicate.run(
-                "facebookresearch/demucs:e077d4f5a8251a16210db280249281a7b483161099f36f0412b1c73a114f6d4d",
-                input={"audio": audio_file}
-            )
+        if not audio_url:
+            raise Exception("No se pudo generar la URL temporal para el archivo de audio.")
+
+        print(f"--> [OK] URL temporal generada: {audio_url}. Procesando en Replicate...")
+
+        # 2. Llamada estable a Replicate con la URL pública
+        output = replicate.run(
+            "facebookresearch/demucs:e077d4f5a8251a16210db280249281a7b483161099f36f0412b1c73a114f6d4d",
+            input={
+                "audio": audio_url
+            }
+        )
+
+        print(f"--> [ÉXITO REPLICATE]: {output}")
 
         TRABAJOS[job_id] = {
             "status": "completado",
@@ -43,11 +69,13 @@ def Tarea_Separar_Audio(job_id: str, file_path: str):
                 "bateria": output.get("drums")
             }
         }
+
     except Exception as e:
+        print(f"--> [ERROR TAREA]: {str(e)}")
         TRABAJOS[job_id] = {"status": "error", "mensaje": str(e)}
     finally:
-        if os.path.exists(file_path):
-            os.remove(file_path)
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
 
 @app.post("/api/separar-audio/")
 async def separar_audio(
@@ -57,20 +85,18 @@ async def separar_audio(
     if not REPLICATE_API_TOKEN:
         raise HTTPException(status_code=500, detail="Falta REPLICATE_API_TOKEN en Railway")
 
-    # Guardar archivo temporalmente
+    # Guardar archivo localmente
     with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_file:
         content = await file.read()
         temp_file.write(content)
         temp_path = temp_file.name
 
-    # Crear ID único de trabajo
     job_id = str(hash(temp_path + str(os.urandom(8))))
     TRABAJOS[job_id] = {"status": "pendiente"}
 
-    # Iniciar procesamiento en segundo plano (NO bloquea la conexión)
+    # Iniciar la tarea en segundo plano sin congelar la app
     background_tasks.add_task(Tarea_Separar_Audio, job_id, temp_path)
 
-    # Responde DE INMEDIATO al teléfono (en 1 segundo)
     return {"status": "exito", "job_id": job_id}
 
 @app.get("/api/estado-trabajo/{job_id}")
