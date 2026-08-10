@@ -1,10 +1,11 @@
 import os
 import tempfile
+import asyncio
 import replicate
 from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI()
+app = FastAPI(title="Servidor Audio App")
 
 app.add_middleware(
     CORSMiddleware,
@@ -17,18 +18,26 @@ app.add_middleware(
 REPLICATE_API_TOKEN = os.environ.get("REPLICATE_API_TOKEN")
 TRABAJOS = {}
 
+@app.get("/")
+def home():
+    return {"status": "online", "mensaje": "Servidor listo"}
+
 def Tarea_Separar_Audio(job_id: str, temp_path: str):
     try:
         TRABAJOS[job_id] = {"status": "procesando"}
 
-        # Pasar el archivo abierto en modo lectura binaria ("rb")
+        print(f"--> [OK] Enviando archivo a Replicate (Demucs Oficial)...")
+
+        # LLAMADA OFICIAL SIN HASH DEPRECIADO
         with open(temp_path, "rb") as audio_file:
             output = replicate.run(
-                "facebookresearch/demucs:e077d4f5a8251a16210db280249281a7b483161099f36f0412b1c73a114f6d4d",
+                "facebookresearch/demucs",
                 input={
                     "audio": audio_file
                 }
             )
+
+        print(f"--> [ÉXITO REPLICATE]: {output}")
 
         TRABAJOS[job_id] = {
             "status": "completado",
@@ -39,8 +48,9 @@ def Tarea_Separar_Audio(job_id: str, temp_path: str):
                 "bateria": output.get("drums")
             }
         }
+
     except Exception as e:
-        print(f"--> Error Replicate 422: {str(e)}")
+        print(f"--> [ERROR REPLICATE]: {str(e)}")
         TRABAJOS[job_id] = {"status": "error", "mensaje": str(e)}
     finally:
         if os.path.exists(temp_path):
