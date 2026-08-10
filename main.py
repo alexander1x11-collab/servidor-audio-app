@@ -26,15 +26,11 @@ def Tarea_Separar_Audio(job_id: str, temp_path: str):
     try:
         TRABAJOS[job_id] = {"status": "procesando"}
 
-        print(f"--> [OK] Procesando trabajo {job_id} en Replicate...")
-
         with open(temp_path, "rb") as audio_file:
             output = replicate.run(
                 "facebookresearch/demucs",
                 input={"audio": audio_file}
             )
-
-        print(f"--> [ÉXITO REPLICATE {job_id}]: {output}")
 
         TRABAJOS[job_id] = {
             "status": "completado",
@@ -45,9 +41,7 @@ def Tarea_Separar_Audio(job_id: str, temp_path: str):
                 "bateria": output.get("drums")
             }
         }
-
     except Exception as e:
-        print(f"--> [ERROR REPLICATE {job_id}]: {str(e)}")
         TRABAJOS[job_id] = {"status": "error", "mensaje": str(e)}
     finally:
         if os.path.exists(temp_path):
@@ -60,31 +54,23 @@ async def separar_audio(
     file: UploadFile = File(...)
 ):
     if not REPLICATE_API_TOKEN:
-        raise HTTPException(status_code=500, detail="Falta REPLICATE_API_TOKEN en Railway")
+        raise HTTPException(status_code=500, detail="Falta REPLICATE_API_TOKEN")
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_file:
         content = await file.read()
         temp_file.write(content)
         temp_path = temp_file.name
 
-    # Generar un ID único estrictamente tipo String
     job_id = str(abs(hash(temp_path + str(os.urandom(8)))))
     TRABAJOS[job_id] = {"status": "pendiente"}
 
     background_tasks.add_task(Tarea_Separar_Audio, job_id, temp_path)
-    
-    print(f"--> Nuevo trabajo creado con ID: {job_id}")
     return {"status": "exito", "job_id": job_id}
 
 @app.get("/api/estado-trabajo/{job_id}")
 @app.get("/api/estado-trabajo/{job_id}/")
 def obtener_estado(job_id: str):
-    # Buscar como String exacto
-    job_key = str(job_id).strip()
-    trabajo = TRABAJOS.get(job_key)
-    
+    trabajo = TRABAJOS.get(str(job_id).strip())
     if not trabajo:
-        # Si el servidor se reinició y perdió el ID, informar para que la app no entre en bucle
-        return {"status": "error", "mensaje": "El trabajo expiró por reinicio del servidor. Intenta de nuevo."}
-        
+        return {"status": "error", "mensaje": "El trabajo expiró. Reintente."}
     return trabajo
