@@ -1,76 +1,98 @@
 import os
-import tempfile
-import asyncio
-import replicate
-from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
-from fastapi.middleware.cors import CORSMiddleware
+import uuid
+import subprocess
+from fastapi import FastAPI, UploadFile, File, Form
+from fastapi.responses import FileResponse, JSONResponse
+from pathlib import Path
 
-app = FastAPI(title="Servidor Audio App")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-REPLICATE_API_TOKEN = os.environ.get("REPLICATE_API_TOKEN")
-TRABAJOS = {}
+app = FastAPI()
+BASE_DIR = Path("/tmp/jobs")
+BASE_DIR.mkdir(parents=True, exist_ok=True)
 
 @app.get("/")
 def home():
-    return {"status": "online", "mensaje": "Servidor listo"}
+    return {"status": "ok", "mensaje": "Servidor Render Activo"}
 
-def Tarea_Separar_Audio(job_id: str, temp_path: str):
+# Endpoint para procesar archivos locales subidos desde el teléfono
+@app.post("/separate")
+async def separate(file: UploadFile = File(...)):
     try:
-        TRABAJOS[job_id] = {"status": "procesando"}
+        job_id = str(uuid.uuid4())[:8]
+        job_dir = BASE_DIR / job_id
+        job_dir.mkdir(parents=True, exist_ok=True)
 
-        with open(temp_path, "rb") as audio_file:
-            output = replicate.run(
-                "facebookresearch/demucs",
-                input={"audio": audio_file}
-            )
+        input_path = job_dir / "input.mp3"
+        output_dir = job_dir / "output"
 
-        TRABAJOS[job_id] = {
-            "status": "completado",
-            "urls": {
-                "voz": output.get("vocals"),
-                "pista": output.get("no_vocals") or output.get("other"),
-                "bajo": output.get("bass"),
-                "bateria": output.get("drums")
+        with open(input_path, "wb") as f:
+            f.write(await file.read())
+
+        cmd = ["demucs", "-n", "htdemucs", "--two-stems", "vocals", str(input_path), "-o", str(output_dir)]
+        res = subprocess.run(cmd, capture_output=True, text=True)
+
+        if res.returncode != 0:
+            return JSONResponse(status_code=500, content={"status": "error", "mensaje": res.stderr})
+
+        return {
+            "status": "exito",
+            "job_id": job_id,
+            "stems": {
+                "vocals": f"/get-stem?job_id={job_id}&pista=vocals",
+                "drums": f"/get-stem?job_id={job_id}&pista=no_vocals",
+                "bass": f"/get-stem?job_id={job_id}&pista=no_vocals",
+                "other": f"/get-stem?job_id={job_id}&pista=no_vocals"
             }
         }
     except Exception as e:
-        TRABAJOS[job_id] = {"status": "error", "mensaje": str(e)}
-    finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
+        return JSONResponse(status_code=500, content={"status": "error", "mensaje": str(e)})
 
-@app.post("/api/separar-audio")
-@app.post("/api/separar-audio/")
-async def separar_audio(
-    background_tasks: BackgroundTasks,
-    file: UploadFile = File(...)
-):
-    if not REPLICATE_API_TOKEN:
-        raise HTTPException(status_code=500, detail="Falta REPLICATE_API_TOKEN")
+# Nuevo endpoint para procesar URLs de YouTube
+@app.post("/separate-youtube")
+async def separate_youtube(url: str = Form(...)):
+    try:
+        job_id = str(uuid.uuid4())[:8]
+        job_dir = BASE_DIR / job_id
+        job_dir.mkdir(parents=True, exist_ok=True)
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_file:
-        content = await file.read()
-        temp_file.write(content)
-        temp_path = temp_file.name
+        input_path = job_dir / "input.mp3"
+        output_dir = job_dir / "output"
 
-    job_id = str(abs(hash(temp_path + str(os.urandom(8)))))
-    TRABAJOS[job_id] = {"status": "pendiente"}
+        # Descarga el audio directamente de la URL de YouTube usando yt-dlp
+        download_cmd = [
+            "yt-dlp",
+            "-x",
+            "--audio-format", "mp3",
+            "-o", str(input_path),
+            url
+        ]
+        dl_res = subprocess.run(download_cmd, capture_output=True, text=True)
 
-    background_tasks.add_task(Tarea_Separar_Audio, job_id, temp_path)
-    return {"status": "exito", "job_id": job_id}
+        if dl_res.returncode != 0:
+            return JSONResponse(status_code=500, content={"status": "error", "mensaje": "Error al descargar desde YouTube"})
 
-@app.get("/api/estado-trabajo/{job_id}")
-@app.get("/api/estado-trabajo/{job_id}/")
-def obtener_estado(job_id: str):
-    trabajo = TRABAJOS.get(str(job_id).strip())
-    if not trabajo:
-        return {"status": "error", "mensaje": "El trabajo expiró. Reintente."}
-    return trabajo
+        # Pasa el audio extraído a Demucs
+        cmd = ["demucs", "-n", "htdemucs", "--two-stems", "vocals", str(input_path), "-o", str(output_dir)]
+        res = subprocess.run(cmd, capture_output=True, text=True)
+
+        if res.returncode != 0:
+            return JSONResponse(status_code=500, content={"status": "error", "mensaje": res.stderr})
+
+        return {
+            "status": "exito",
+            "job_id": job_id,
+            "stems": {
+                "vocals": f"/get-stem?job_id={job_id}&pista=vocals",
+                "drums": f"/get-stem?job_id={job_id}&pista=no_vocals",
+                "bass": f"/get-stem?job_id={job_id}&pista=no_vocals",
+                "other": f"/get-stem?job_id={job_id}&pista=no_vocals"
+            }
+        }
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"status": "error", "mensaje": str(e)})
+
+@app.get("/get-stem")
+def get_stem(job_id: str, pista: str = "vocals"):
+    stem_path = BASE_DIR / job_id / "output" / "htdemucs" / "input" / f"{pista}.wav"
+    if stem_path.exists():
+        return FileResponse(str(stem_path), media_type="audio/wav")
+    return JSONResponse(status_code=404, content={"status": "error", "mensaje": "Pista no encontrada"})
