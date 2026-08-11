@@ -5,12 +5,13 @@ from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import FileResponse, JSONResponse
 from pathlib import Path
 
+# Desactiva avisos y limites de librerías en la consola
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+os.environ["PYTHONWARNINGS"] = "ignore"
+
 app = FastAPI()
 BASE_DIR = Path("/tmp/jobs")
 BASE_DIR.mkdir(parents=True, exist_ok=True)
-
-# Desactiva avisos de Hugging Face en el sistema
-os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 
 @app.get("/")
 def home():
@@ -29,7 +30,7 @@ async def separate(file: UploadFile = File(...)):
         with open(input_path, "wb") as f:
             f.write(await file.read())
 
-        # Ejecuta Demucs con modelo ligero de 2 stems
+        # Ejecución limpia de Demucs
         cmd = [
             "demucs",
             "-n", "htdemucs",
@@ -37,13 +38,15 @@ async def separate(file: UploadFile = File(...)):
             str(input_path),
             "-o", str(output_dir)
         ]
-        res = subprocess.run(cmd, capture_output=True, text=True)
-
-        # Verifica si los archivos .wav realmente se generaron en lugar de fallar por un simple warning de texto
-        expected_stem = output_dir / "htdemucs" / "input" / "vocals.wav"
         
-        if not expected_stem.exists() and res.returncode != 0:
-            return JSONResponse(status_code=500, content={"status": "error", "mensaje": res.stderr})
+        # Redirige el flujo de errores de texto para evitar falsos positivos
+        process = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+        # Revisa únicamente si el archivo final .wav fue generado exitosamente
+        expected_stem = output_dir / "htdemucs" / "input" / "vocals.wav"
+
+        if not expected_stem.exists():
+            return JSONResponse(status_code=500, content={"status": "error", "mensaje": "No se pudo procesar el archivo de audio."})
 
         return {
             "status": "exito",
@@ -75,10 +78,7 @@ async def separate_youtube(url: str = Form(...)):
             "-o", str(input_path),
             url
         ]
-        dl_res = subprocess.run(download_cmd, capture_output=True, text=True)
-
-        if dl_res.returncode != 0:
-            return JSONResponse(status_code=500, content={"status": "error", "mensaje": "Error al descargar desde YouTube"})
+        subprocess.run(download_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
         cmd = [
             "demucs",
@@ -87,12 +87,12 @@ async def separate_youtube(url: str = Form(...)):
             str(input_path),
             "-o", str(output_dir)
         ]
-        res = subprocess.run(cmd, capture_output=True, text=True)
+        subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
         expected_stem = output_dir / "htdemucs" / "input" / "vocals.wav"
 
-        if not expected_stem.exists() and res.returncode != 0:
-            return JSONResponse(status_code=500, content={"status": "error", "mensaje": res.stderr})
+        if not expected_stem.exists():
+            return JSONResponse(status_code=500, content={"status": "error", "mensaje": "No se pudo procesar la canción desde YouTube."})
 
         return {
             "status": "exito",
