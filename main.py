@@ -9,14 +9,13 @@ app = FastAPI()
 BASE_DIR = Path("/tmp/jobs")
 BASE_DIR.mkdir(parents=True, exist_ok=True)
 
-# URL del repositorio oficial de Meta para bypass de Hugging Face
-DEMUCS_REPO = "https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/"
+# Desactiva avisos de Hugging Face en el sistema
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 
 @app.get("/")
 def home():
     return {"status": "ok", "mensaje": "Servidor Activo"}
 
-# Endpoint para procesar archivos locales subidos desde el teléfono
 @app.post("/separate")
 async def separate(file: UploadFile = File(...)):
     try:
@@ -30,18 +29,20 @@ async def separate(file: UploadFile = File(...)):
         with open(input_path, "wb") as f:
             f.write(await file.read())
 
-        # Ejecuta Demucs forzando la descarga desde Meta AI para evitar pedir HF_TOKEN
+        # Ejecuta Demucs con modelo ligero de 2 stems
         cmd = [
             "demucs",
             "-n", "htdemucs",
-            "--repo", DEMUCS_REPO,
             "--two-stems", "vocals",
             str(input_path),
             "-o", str(output_dir)
         ]
         res = subprocess.run(cmd, capture_output=True, text=True)
 
-        if res.returncode != 0:
+        # Verifica si los archivos .wav realmente se generaron en lugar de fallar por un simple warning de texto
+        expected_stem = output_dir / "htdemucs" / "input" / "vocals.wav"
+        
+        if not expected_stem.exists() and res.returncode != 0:
             return JSONResponse(status_code=500, content={"status": "error", "mensaje": res.stderr})
 
         return {
@@ -57,7 +58,6 @@ async def separate(file: UploadFile = File(...)):
     except Exception as e:
         return JSONResponse(status_code=500, content={"status": "error", "mensaje": str(e)})
 
-# Endpoint para procesar URLs de YouTube
 @app.post("/separate-youtube")
 async def separate_youtube(url: str = Form(...)):
     try:
@@ -68,7 +68,6 @@ async def separate_youtube(url: str = Form(...)):
         input_path = job_dir / "input.mp3"
         output_dir = job_dir / "output"
 
-        # Descarga el audio directamente de YouTube
         download_cmd = [
             "yt-dlp",
             "-x",
@@ -81,18 +80,18 @@ async def separate_youtube(url: str = Form(...)):
         if dl_res.returncode != 0:
             return JSONResponse(status_code=500, content={"status": "error", "mensaje": "Error al descargar desde YouTube"})
 
-        # Pasa el audio extraído a Demucs con repositorio explícito
         cmd = [
             "demucs",
             "-n", "htdemucs",
-            "--repo", DEMUCS_REPO,
             "--two-stems", "vocals",
             str(input_path),
             "-o", str(output_dir)
         ]
         res = subprocess.run(cmd, capture_output=True, text=True)
 
-        if res.returncode != 0:
+        expected_stem = output_dir / "htdemucs" / "input" / "vocals.wav"
+
+        if not expected_stem.exists() and res.returncode != 0:
             return JSONResponse(status_code=500, content={"status": "error", "mensaje": res.stderr})
 
         return {
@@ -110,11 +109,7 @@ async def separate_youtube(url: str = Form(...)):
 
 @app.get("/get-stem")
 def get_stem(job_id: str, pista: str = "vocals"):
-    # Búsqueda dinámica de la pista dentro de la estructura generada por Demucs
-    job_path = BASE_DIR / job_id / "output" / "htdemucs" / "input"
-    stem_path = job_path / f"{pista}.wav"
-    
+    stem_path = BASE_DIR / job_id / "output" / "htdemucs" / "input" / f"{pista}.wav"
     if stem_path.exists():
         return FileResponse(str(stem_path), media_type="audio/wav")
-    
     return JSONResponse(status_code=404, content={"status": "error", "mensaje": f"Pista '{pista}' no encontrada"})
