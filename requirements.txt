@@ -1,6 +1,7 @@
 fastapi
 uvicorn
 python-multipart
-replicate
-requests
+demucs
+torch
+torchaudio
 yt-dlp
