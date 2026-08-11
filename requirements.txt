@@ -1,7 +1,9 @@
 fastapi
 uvicorn
 python-multipart
-demucs
+numpy
+scipy
 torch
 torchaudio
+demucs
 yt-dlp
